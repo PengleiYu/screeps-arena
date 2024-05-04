@@ -1,9 +1,9 @@
 import { Creep, GameObject } from "game/prototypes";
-import { Flag } from "arena";
 import { Visual } from "game/visual";
 import { getDirection, getObjectsByPrototype, getRange } from "game/utils";
 import { searchPath } from "game/path-finder";
 import { ATTACK, HEAL, RANGED_ATTACK } from "game/constants";
+import { Flag } from "arena";
 
 declare module "game/prototypes" {
   interface Creep {
@@ -14,7 +14,7 @@ declare module "game/prototypes" {
 export class RoleFactory {
   constructor(private context: ArenaContext) {}
 
-  public createRole(creep: Creep): Role | null {
+  public createRole(creep: Creep): Role {
     if (Soldier.canPlay(creep)) {
       return new Soldier(creep, this.context);
     } else if (Archer.canPlay(creep)) {
@@ -22,15 +22,42 @@ export class RoleFactory {
     } else if (Priest.canPlay(creep)) {
       return new Priest(creep, this.context);
     } else {
-      return null;
+      let typeArr = creep.body.map(it => it.type);
+      throw new Error(`无法处理的creep:${typeArr}`);
     }
   }
 }
 
 export abstract class Role {
-  public constructor(protected creep: Creep, protected context: ArenaContext) {}
+  private _positive: boolean = false;
+  set positive(positive: boolean) {
+    this._positive = positive;
+  }
 
-  abstract play(): void;
+  get positive(): boolean {
+    return this._positive;
+  }
+
+  public constructor(protected creep: Creep, protected context: ArenaContext) {
+    if (!creep.initialPos) {
+      creep.initialPos = { x: creep.x, y: creep.y };
+    }
+  }
+
+  public play(): void {
+    this.work();
+    this.positive ? this.gotoEnemyHome() : this.stayHome();
+  }
+
+  abstract work(): void;
+
+  protected stayHome(): void {
+    this.creep.moveTo(this.creep.initialPos);
+  }
+
+  protected gotoEnemyHome(): void {
+    this.creep.moveTo(this.context.enemyFlag);
+  }
 }
 
 class Soldier extends Role {
@@ -38,17 +65,14 @@ class Soldier extends Role {
     return creep.body.some(i => i.type === ATTACK);
   }
 
-  play(): void {
-    this.attack();
+  work(): void {
+    this.attackNearby();
   }
 
-  public attack() {
+  public attackNearby() {
     // Here is the alternative to the creep "memory" from Screeps World. All game objects are persistent. You can assign any property to it once, and it will be available during the entire match.
     let creep = this.creep;
     let enemyCreeps = this.context.enemyCreeps;
-    if (!creep.initialPos) {
-      creep.initialPos = { x: creep.x, y: creep.y };
-    }
 
     new Visual().text(
       creep.hits.toString(),
@@ -60,15 +84,13 @@ class Soldier extends Role {
         backgroundPadding: 0.03
       }
     );
-    const targets = enemyCreeps
-      .filter(i => getRange(i, creep.initialPos) < 10)
-      .sort((a, b) => getRange(a, creep) - getRange(b, creep));
+    let creepsNearby = enemyCreeps.filter(i => getRange(i, creep.initialPos) < 10);
 
-    if (targets.length > 0) {
-      creep.moveTo(targets[0]);
-      creep.attack(targets[0]);
-    } else {
-      creep.moveTo(creep.initialPos);
+    if (creepsNearby.length > 0) {
+      let target = creepsNearby.sort((a, b) => getRange(a, creep) - getRange(b, creep))[0];
+      creep.moveTo(target);
+      creep.attack(target);
+      return;
     }
   }
 }
@@ -78,7 +100,7 @@ class Archer extends Role {
     return creep.body.some(i => i.type === RANGED_ATTACK);
   }
 
-  play(): void {
+  work(): void {
     this.shoot();
   }
 
@@ -89,11 +111,6 @@ class Archer extends Role {
     if (targets.length > 0) {
       creep.rangedAttack(targets[0]);
     }
-
-    if (context.enemyFlag) {
-      creep.moveTo(context.enemyFlag);
-    }
-
     const range = 3;
     const enemiesInRange = context.enemyCreeps.filter(i => getRange(i, creep) < range);
     if (enemiesInRange.length > 0) {
@@ -107,7 +124,7 @@ class Priest extends Role {
     return creep.body.some(i => i.type === HEAL);
   }
 
-  play(): void {
+  work(): void {
     this.heal();
   }
 
@@ -140,10 +157,6 @@ class Priest extends Role {
     if (enemiesInRange.length > 0) {
       flee(creep, enemiesInRange, range);
     }
-
-    if (context.enemyFlag) {
-      creep.moveTo(context.enemyFlag);
-    }
   }
 }
 
@@ -162,16 +175,21 @@ function flee(creep: Creep, targets: GameObject[], range: number) {
 export interface ArenaContext {
   myCreeps: Creep[];
   enemyCreeps: Creep[];
-  enemyFlag: Flag | undefined;
+  enemyFlag: Flag;
+  myFlag: Flag;
 }
 
 export class ArenaContextImpl implements ArenaContext {
+  get myFlag(): Flag {
+    return getObjectsByPrototype(Flag).find(i => i.my)!!;
+  }
+
   get myCreeps(): Creep[] {
     return getObjectsByPrototype(Creep).filter(i => i.my);
   }
 
-  get enemyFlag(): Flag | undefined {
-    return getObjectsByPrototype(Flag).find(i => !i.my);
+  get enemyFlag(): Flag {
+    return getObjectsByPrototype(Flag).find(i => !i.my)!!;
   }
 
   get enemyCreeps(): Creep[] {
